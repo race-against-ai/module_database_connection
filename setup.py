@@ -9,15 +9,15 @@ def read(fname):
 
 
 setup(
-    name="raai_module_template",
+    name="raai_module_database_connection",
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass(),
     author="NGITl",
-    author_email="your@email.de",
-    description=("RAAI Module Template for managing different projects for RAAI"),
+    author_email="p.altmann@hotmail.de",
+    description=("RAAI Module for a Database Connection"),
     license="GPL 3.0",
     keywords="template",
-    url="https://github.com/vw-wob-it-edu-ngitl/raai_module_template",
+    url="https://github.com/vw-wob-it-edu-ngitl/raai_module_database_connection",
     packages=find_packages(),
     long_description=read("README.md"),
     install_requires=["pynng~=0.7.2"],

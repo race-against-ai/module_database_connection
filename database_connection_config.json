@@ -1,0 +1,23 @@
+{
+  "pynng": {
+    "publishers": {
+        "data_publisher": {
+          "address" : "ipc:///tmp/RAAI/database_connection.ipc",
+          "topics": {
+            "time_tracking": "time_tracking",
+            "best_times": "best_times"
+          }
+        }
+    },
+    "subscribers": {
+      "time_tracking": {
+        "address": "ipc:///tmp/RAAI/lap_times.ipc",
+        "topics": {
+          "lap_finished": "lap_finished",
+          "sector:finished": "sector_finished",
+          "lap_start": "lap_start"
+        }
+      }
+    }
+  }
+}

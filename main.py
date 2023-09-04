@@ -1,5 +1,6 @@
 # Copyright (C) 2022 NG:ITL
-# import the main file in the backend folder
+from database_connection.new_fake import FakeDataSender
 
 if __name__ == "__main__":
-    print("enter you projects main function :)")
+    data_sender = FakeDataSender()
+    # data_sender.run()
