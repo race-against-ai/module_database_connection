@@ -7,7 +7,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=['functions.json', 'functions.json'],
     hiddenimports=['_cffi_backend'],
     hookspath=[],
     hooksconfig={},
