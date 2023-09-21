@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import queue
 import time
+import asyncio
 
 
 def is_internet_available():
@@ -98,6 +99,8 @@ class DatabaseConnection:
         self.__api_queue = queue.Queue()
         self.__unsent_data = {}
 
+        self.__asyncio_loop_running = False
+
         self.__api_worker_thread = threading.Thread(target=self.__api_worker)
         self.__api_worker_thread.deamon = True
 
@@ -106,6 +109,10 @@ class DatabaseConnection:
 
         publisher_address = self.__config["pynng"]["publishers"]["data_publisher"]["address"]
         self.__data_publisher = pynng.Pub0(listen=publisher_address)
+
+        connection_overlay_address = self.__config["pynng"]["requesters"]["connection_overlay"]["address"]
+        self.__request_responder= pynng.Rep0()
+        self.__request_responder.listen(connection_overlay_address)
 
         time_tracking_address = self.__config["pynng"]["subscribers"]["time_tracking"]["address"]
         time_tracking_topics = self.__config["pynng"]["subscribers"]["time_tracking"]["topics"]
@@ -122,10 +129,21 @@ class DatabaseConnection:
 
     def start(self):
         self.__api_worker_thread.start()
+        self.__asyncio_loop_running = True
+        asyncio.run(self.__receive_request())
         while True:
             if self.__unsent_data:
                 self.__unsent_data_thread.start()
             self.__receive_time_tracking()
+
+    async def __receive_request(self):
+        while self.__asyncio_loop_running:
+            request = self.__request_responder.recv()
+
+            response = f"Server received: {request.decode()}"
+
+            # Send the response back to the client
+            self.__request_responder.send(response.encode())
 
     def __assign_new_driver(self, driver_id: int, driver_name: str):
         self.__current_driver["id"] = driver_id

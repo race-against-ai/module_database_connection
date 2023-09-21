@@ -5,7 +5,8 @@
           "address" : "ipc:///tmp/RAAI/database_connection.ipc",
           "topics": {
             "time_tracking": "time_tracking",
-            "best_times": "best_times"
+            "best_times": "best_times",
+            "overlay_info": "overlay_info"
           }
         }
     },
@@ -17,6 +18,11 @@
           "sector:finished": "sector_finished",
           "lap_start": "lap_start"
         }
+      }
+    },
+    "requesters": {
+      "connection_overlay": {
+        "address": "ipc:///tmp/RAAI/connection_overlay.ipc"
       }
     }
   }
