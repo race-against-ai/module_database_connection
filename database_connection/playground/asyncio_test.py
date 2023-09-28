@@ -14,6 +14,7 @@ class TestClass:
     async def toggle_internet_status(self):
         while True:
             async with self.lock:
+                print("changed")
                 self.__internet_available = not self.__internet_available
             await asyncio.sleep(1)  # Toggle every second
 

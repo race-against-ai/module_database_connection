@@ -7,7 +7,6 @@ from pathlib import Path
 import threading
 import queue
 import time
-import asyncio
 
 
 def is_internet_available():
@@ -67,8 +66,8 @@ def receive_data_mod(sub: pynng.Sub0, block_state: bool = True) -> list[dict | s
     try:
         msg = sub.recv(block=False)
         data = remove_pynng_topic_mod(msg)
-        data = json.loads(data[0])
-        return [data, data[1]]
+        info = json.loads(data[0])
+        return [info, data[1]]
 
     except pynng.TryAgain:
         return None
@@ -87,19 +86,20 @@ def remove_pynng_topic_mod(data, sign: str = " ") -> list[str]:
     decoded_data = decoded_data[i + 1:]
     return [decoded_data, topic]
 
-
+   
 class DatabaseConnection:
     def __init__(self, functions: str = "functions.json"):
+        self._program_running = True
 
+        self.__thread_lock = threading.Lock()
         self.__functions = json.load(open(functions, "r"))
         self.__config = json.load(open((resource_path() / "database_connection_config.json"), "r"))
         self.__url_prefix = "https://raaidatabaseapi.azurewebsites.net/api/"
 
         self.__internet_connection = is_internet_available()
         self.__api_queue = queue.Queue()
+        self.__stop_event = threading.Event()
         self.__unsent_data = {}
-
-        self.__asyncio_loop_running = False
 
         self.__api_worker_thread = threading.Thread(target=self.__api_worker)
         self.__api_worker_thread.deamon = True
@@ -111,8 +111,10 @@ class DatabaseConnection:
         self.__data_publisher = pynng.Pub0(listen=publisher_address)
 
         connection_overlay_address = self.__config["pynng"]["requesters"]["connection_overlay"]["address"]
-        self.__request_responder= pynng.Rep0()
+        self.__request_responder = pynng.Rep0()
         self.__request_responder.listen(connection_overlay_address)
+        self.__valid_requests = ["get_data", "get_data_by_id", "refresh", "reconnect"]
+        print("Database connection initialized")
 
         time_tracking_address = self.__config["pynng"]["subscribers"]["time_tracking"]["address"]
         time_tracking_topics = self.__config["pynng"]["subscribers"]["time_tracking"]["topics"]
@@ -127,23 +129,39 @@ class DatabaseConnection:
         self.__current_lap = None
         self.__current_lap_valid = True
 
+
     def start(self):
-        self.__api_worker_thread.start()
-        self.__asyncio_loop_running = True
-        asyncio.run(self.__receive_request())
-        while True:
-            if self.__unsent_data:
-                self.__unsent_data_thread.start()
-            self.__receive_time_tracking()
+        try: 
+            self.__start_api_worker_thread()
+            while self._program_running:
+                if self.__unsent_data and not self.__unsent_data_thread.is_alive():
+                    self.__unsent_data_thread.start()
+                self.__receive_time_tracking()
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt")
+            self.stop()
+        self._program_running = False
+        
+        print("done")
 
-    async def __receive_request(self):
-        while self.__asyncio_loop_running:
+    def stop(self):
+        self.__stop_event.set() 
+
+    def __request_receiver_worker(self):
+        while self.program_running():
+            if self.__stop_event.is_set():
+                return
             request = self.__request_responder.recv()
+            if request in self.__valid_requests:
+                response = f"Server received: {request.decode()}"
+            
+            else:
+                response = "Invalid request"
 
-            response = f"Server received: {request.decode()}"
-
-            # Send the response back to the client
             self.__request_responder.send(response.encode())
+
+    def program_running(self) -> bool:
+        return self._program_running
 
     def __assign_new_driver(self, driver_id: int, driver_name: str):
         self.__current_driver["id"] = driver_id
@@ -215,57 +233,98 @@ class DatabaseConnection:
         if not self.__internet_connection:
             self.__internet_connection = is_internet_available()
 
+    def __start_api_worker_thread(self):
+        self.__api_worker_thread.start()
+
+    def __stop_api_worker_thread(self):
+        self._program_running = False
+        self.__api_queue.put(None)  # Add a sentinel to signal the thread to exit
+        self.__api_worker_thread.join()
+
     def __api_worker(self):
-        while True:
-            try:
-                url, data, headers, method = self.__api_queue.get()
+        print("API worker started")
+        while self.program_running():
+            with self.__thread_lock:
+                try:
+                    request = self.__api_queue.get()
+                    if request is None:
+                        break
 
-                response = send_request(url, data, headers, method)
+                    else:
+                        url, data, headers, method = self.__api_queue.get()
 
-                if self.__internet_connection:
+                        response = send_request(url, data, headers, method)
+
+                        if self.__internet_connection:
+                            response = send_request(url, data, headers, method)
+                            if response.status_code == 200:
+                                print(f"API request successful: {response.status_code}")
+
+                            else:
+                                print(f"API request failed: {response.status_code}")
+                                print(f"                    {response.text}")
+                        else:
+                            identifier = str(time.time())
+                            self.__unsent_data[identifier] = {
+                                "url": url,
+                                "data": data,
+                                "headers": headers,
+                                "method": method
+                            }
+                            print(f"API request failed: {response.status_code}")
+                            print(f"                    {response.text}")
+                            print("Data saved for later transmission")
+
+                        self.__api_queue.task_done()
+
+                except Exception as e:
+                    print(e)
+                    print("Error while sending API request")
+
+        print("API worker stopped")
+
+    def __save_unsent_data(self, identifier: str, url: str, data: dict, headers: dict, method: str):
+        self.__unsent_data[identifier] = {
+            "url": url,
+            "data": data,
+            "headers": headers,
+            "method": method
+        }
+        filename = f"unsent_data_{time.time()}"
+        i = 0
+        if os.path.exists(filename):
+            while os.path.exists(filename):
+                new_filename = f"{filename}_{i}"
+                i += 1
+            
+        json.dump(self.__unsent_data, open("filename.json", "w"))
+
+
+    def __send_unsent_data_worker(self):
+        with self.__thread_lock:
+            if self.__stop_event.is_set():
+                self.__save_unsent_data()
+                return
+
+            if is_internet_available():
+                for identifier, data in self.__unsent_data.items():
+                    if self.__stop_event.is_set():
+                        return
+                    url = data["url"]
+                    data = data["data"]
+                    headers = data["headers"]
+                    method = data["method"]
+
                     response = send_request(url, data, headers, method)
+
                     if response.status_code == 200:
                         print(f"API request successful: {response.status_code}")
+                        del self.__unsent_data[identifier]
 
                     else:
                         print(f"API request failed: {response.status_code}")
                         print(f"                    {response.text}")
-                else:
-                    identifier = str(time.time())
-                    self.__unsent_data[identifier] = {
-                        "url": url,
-                        "data": data,
-                        "headers": headers,
-                        "method": method
-                    }
-                    print(f"API request failed: {response.status_code}")
-                    print(f"                    {response.text}")
-                    print("Data saved for later transmission")
+                        break
 
-                self.__api_queue.task_done()
-
-            except Exception as e:
-                print(e)
-                print("Error while sending API request")
-
-    def __send_unsent_data_worker(self):
-        if is_internet_available():
-            for identifier, data in self.__unsent_data.items():
-                url = data["url"]
-                data = data["data"]
-                headers = data["headers"]
-                method = data["method"]
-
-                response = send_request(url, data, headers, method)
-
-                if response.status_code == 200:
-                    print(f"API request successful: {response.status_code}")
-                    del self.__unsent_data[identifier]
-
-                else:
-                    print(f"API request failed: {response.status_code}")
-                    print(f"                    {response.text}")
-                    break
-
-        else:
-            print("No internet connection available")
+            else:
+                print("No internet connection available")
