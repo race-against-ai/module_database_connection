@@ -1,31 +1,29 @@
+import aiohttp
+import aiohttp.client_exceptions
+import pynng
+import json
 import asyncio
 
-class TestClass:
-    def __init__(self):
-        self.__internet_available = False
-        self.lock = asyncio.Lock()
+async def api_worker(queue: asyncio.Queue):
+    while True:
+        data = await queue.get()
+        print(f"Sending {data} to API")
+        await asyncio.sleep(1)
 
-    async def async_task(self):
-        while True:
-            async with self.lock:
-                print(f"Internet available: {self.__internet_available}")
-            await asyncio.sleep(1 / 3)  # Print 3 times a second
+async def test_worker(queue: asyncio.Queue):
+    i = 0
 
-    async def toggle_internet_status(self):
-        while True:
-            async with self.lock:
-                print("changed")
-                self.__internet_available = not self.__internet_available
-            await asyncio.sleep(1)  # Toggle every second
-
-    async def main_loop(self):
-        await asyncio.gather(
-            self.async_task(),
-            self.toggle_internet_status()
-        )
+    while True:
+        await queue.put(f"Run: {i}")
+        i += 1
+        await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    test_instance = TestClass()
+    queue = asyncio.Queue()
+    
+    loop = asyncio.get_event_loop()
+    api_worker = loop.create_task(api_worker(queue))
+    test_worker = loop.create_task(test_worker(queue))
+    loop.run_until_complete(asyncio.wait([api_worker, test_worker]))
 
-    asyncio.run(test_instance.main_loop())
-
+    loop.run_forever()

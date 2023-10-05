@@ -25,5 +25,6 @@
         "address": "ipc:///tmp/RAAI/connection_overlay.ipc"
       }
     }
-  }
+  },
+  "api_url": "https://raaidatabaseapi.azurewebsites.net/api/"
 }
