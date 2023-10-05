@@ -2,7 +2,7 @@ import pynng
 
 # Create a REQ socket and dial the server's address
 client_socket = pynng.Req0()
-client_socket.dial("tcp://127.0.0.1:5555")
+client_socket.dial("ipc:///tmp/RAAI/connection_overlay.ipc")
 
 while True:
     try:
