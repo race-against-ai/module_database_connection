@@ -127,11 +127,14 @@ class RestApiConnection:
         self.__program_running = True
         self.__functions = json.load(open((resource_path() / functions), "r"))
         self.__config = json.load(open((resource_path() / "database_connection_config.json"), "r"))
+        
+        # setting api url based on azure enviroment
         if not localdev:
             self.__api_url = self.__config["api_url"]
         else :
             self.__api_url = "http://localhost:7071/api/"
 
+        # check if internet is available
         self.__internet_connection = is_internet_available()
         self.__api_queue = asyncio.Queue()
         self.__unsent_queue = asyncio.Queue()
@@ -139,6 +142,8 @@ class RestApiConnection:
         self.__unsent_data = {}
         self.__total_unsent_data = 0
         self.__best_times = {}
+
+        # Dummy best Time Data if no internet is available
         self.__saved_lap_times = [
             {
                 "id": "NONE",
@@ -168,6 +173,7 @@ class RestApiConnection:
         self.__existing_driver_ids = []
         self.__existing_convention_ids = []
 
+        # Pynng Setup
         publisher_address = self.__config["pynng"]["publishers"]["data_publisher"]["address"]
         self.__data_publisher = pynng.Pub0()
 
@@ -181,13 +187,17 @@ class RestApiConnection:
         self.__valid_requests = ["get_data", "get_data_by_id", "refresh", "reconnect", "help", "get_best_times"]
         print("Database connection initialized")
 
+        # current drivers and conventions for testing
         self.__current_driver = None
-        self.__current_convention = 2
+        self.__current_convention = 1
 
         self.__current_lap = None
         self.__current_lap_valid = True
+        # Refresh Entries on startup
+        self.__handle_requests("refresh")
     
     def start(self):
+        """Starts the RestApiConnection"""
         loop = asyncio.get_event_loop()
         responder_task = loop.create_task(self.__pynng_responder())
         time_tracker_task = loop.create_task(self.__receive_time_tracking())
@@ -212,7 +222,9 @@ class RestApiConnection:
         self.__get_conventions()
 
     def __get_laptimes(self) -> None:
+        """get top 30 laptimes from the API"""
         print("Getting Laptimes")
+        # payload with the top 30 drivertimes sorted by laptime
         payload= {
             "method": "GET",
             "table": "drivertimes",
@@ -251,79 +263,76 @@ class RestApiConnection:
             print("Error getting laptimes")
 
     def __get_drivers(self) -> None:
+        """Receive every driver appearing in the laptimes"""
         print("Getting Drivers")
         url_suffix = self.__functions["MasterFunction"]["url"]
         header = self.__functions["MasterFunction"]["header"]
         url = self.__api_url + url_suffix
         method = "GET"
 
-        drivers = []
-
-        for entry in self.__existing_driver_ids:
-            payload= {
-                "method": "GET",
-                "table": "drivers",
-                "search":{
-                    "row": "id",
-                    "value": entry
-                }
-            }   
-            response = database_request(url, payload, header, method)
-            if response != "Error":
-                drivers.append(response[0])
-            else:
-                print("Error getting drivers")
-                break
-        
-        if drivers:
-            self.__saved_drivers = []
-            for entry in drivers:
-                self.__saved_drivers.append({
-                    "id": entry[0],
-                    "name": entry[1],
-                    "email": entry[2]
-                })
-                 
+        # setting up payload for drivers
+        payload= {
+            "method": "GET",
+            "table": "drivers",
+            "search":{
+                "row": "id",
+                "value": self.__existing_driver_ids
+            }
+        }   
+        response = database_request(url, payload, header, method)
+        if response != "Error":
+            if response:
+                self.__saved_drivers = []
+                for entry in response:
+                    self.__saved_drivers.append({
+                        "id": entry[0],
+                        "name": entry[1],
+                        "email": entry[2]
+                    })
+            
+        else:
+            print("Error getting drivers")
+                        
     def __get_conventions(self) -> None:
+        """receive every convention appearing in the laptimes"""
         print("Getting Conventions")
         url_suffix = self.__functions["MasterFunction"]["url"]
         header = self.__functions["MasterFunction"]["header"]
         url = self.__api_url + url_suffix
         method = "GET"
 
-        conventions = []
+        # setting up payload for conventions
+        payload= {
+            "method": "GET",
+            "table": "conventions",
+            "search":{
+                "row": "id",
+                "value": self.__existing_convention_ids
+            }
+        }   
+        response = database_request(url, payload, header, method)
+        if response != "Error":
+            if response:
+                self.__save_conventions = []
+                for entry in response:
+                    self.__save_conventions.append({
+                        "id": entry[0],
+                        "name": entry[1],
+                        "location": entry[2]
+                    })
+        else:
+            print("Error getting conventions")
 
-        for entry in self.__existing_convention_ids:
-            payload= {
-                "method": "GET",
-                "table": "conventions",
-                "search":{
-                    "row": "id",
-                    "value": entry
-                }
-            }   
-            response = database_request(url, payload, header, method)
-            if response != "Error":
-                conventions.append(response[0])
-            else:
-                print("Error getting conventions")
-                break
-        
-        if conventions:
-            self.__save_conventions = []
-            for entry in conventions:
-                self.__save_conventions.append({
-                    "id": entry[0],
-                    "name": entry[1],
-                    "location": entry[2]
-                })
-
-    def __get_best_times(self) -> None:
+    def __get_best_times(self) -> dict:
         """Requests best Sector and Laptimes from the API"""
+
+        # setting up payload for best individual sector times
         keys = ["sector1", "sector2", "sector3", "laptime"]
         names = ["sector_1_best_time", "sector_2_best_time" ,"sector_3_best_time", "lap_best_time"]
         i = 1
+        success = True
         for entry in keys:
+            # setting up payload for each
             payload = {
                 "method": "GET",
                 "table": "drivertimes",
@@ -340,7 +349,13 @@ class RestApiConnection:
                 i += 1
             else:
                 print("Error getting best times")
+                success = False
                 break
+        
+        if success:
+            return self.__best_times
+        else:
+            return "Error while getting best times"
 
     async def __pynng_responder(self):
         print("Pynng Responder started")
@@ -348,57 +363,84 @@ class RestApiConnection:
             msg = await self.__request_responder.arecv()
             request = msg.decode() 
             print(f"Received request: {request}")
-            if request in self.__valid_requests:
-                try:
-                    if request == "get_data":
-                        laptimes_dict, drivers_dict, conventions_dict = self.__prepare_data()
-                        response = json.dumps({
-                            "internet_connection": self.__internet_connection,
-                            "unsent_data": self.__unsent_data,
-                            "current_driver": self.__current_driver,
-                            "current_convention": self.__current_convention,
-                            "current_lap": self.__current_lap,
-                            "lap_times": laptimes_dict,
-                            "drivers": drivers_dict,
-                            "conventions": conventions_dict
-                        })
-                        await self.__request_responder.asend(response.encode())
+            response = self.__handle_requests(request)
+            print(f"Sending response:\n      {response}")
+            await self.__request_responder.asend(response.encode())
 
-                    elif request == "get_data_by_id":
-                        await self.__request_responder.asend(json.dumps(self.__fake_data[self.__current_driver]).encode())
+    def __handle_requests(self, request: str) -> str:
+        """Handles requests received via pynng"""
+        data = None
+        if ":" in request:
+            # message = request.strip()
+            message = request.split(":")
+            print(message)
+            request = message[0]
+            data_str = message[1]
+            try: 
+                data_list = data_str.strip('[]').split(',')
+                data_list = [f'"{entry.strip()}"' for entry in data_list]
+                data_str =f"[{','.join(data_list)}]"
+                data = json.loads(data_str)
+                print(type(data), data)
+            except json.decoder.JSONDecodeError:
+                return "Error: Invalid Data Format"
+            
+        if request in self.__valid_requests:
+            print(f"Handling request: {request}")
+            try:
+                if request == "get_data":
+                    laptimes_dict, drivers_dict, conventions_dict = self.__prepare_data()
+                    response = {
+                        "internet_connection": self.__internet_connection,
+                        "unsent_data": self.__unsent_data,
+                        "current_driver": self.__current_driver,
+                        "current_convention": self.__current_convention,
+                        "current_lap": self.__current_lap,
+                        "lap_times": laptimes_dict,
+                        "drivers": drivers_dict,
+                        "conventions": conventions_dict
+                    }
+                    return json.dumps(response)
 
-                    elif request == "get_best_times":
-                        self.__get_best_times()
-                        await self.__request_responder.asend(json.dumps(self.__best_times).encode())
+                elif request == "get_data_by_id":
+                    if data:
+                        return json.dumps(data)
+                    else:
+                        return "Error: No Data Given"
 
-                    elif request == "refresh":
-                        if self.__internet_connection:
-                            self.__refresh_entries()
-                            response = "Refreshed"                            
-                            await self.__request_responder.asend(response.encode())
+                elif request == "get_best_times":
+                    self.__get_best_times()
+                    return json.dumps(self.__best_times)
 
-                        else:
-                            await self.__request_responder.asend("No Internet Connection".encode())
+                elif request == "refresh":
+                    if self.__internet_connection:
+                        self.__refresh_entries()
+                        response = self.__handle_requests("get_data")
+                        return response
+                    else:
+                        return "No Internet Connection"
 
-                    elif request == "reconnect":
-                        if is_internet_available():
-                            self.__internet_connection = True
-                            await self.__request_responder.asend("Reconnected to API".encode())
-                        else:
-                            self.__internet_connection = False
+                elif request == "reconnect":
+                    if is_internet_available():
+                        self.__internet_connection = True
+                        return "Reconnected to API"
+                    else:
+                        self.__internet_connection = False
+                        return "No Internet Connection"
 
-                    elif request == "help":
-                        await self.__request_responder.asend(json.dumps(self.__valid_requests).encode())
+                elif request == "help":
+                    return json.dumps(self.__valid_requests)
 
-                except Exception as e:
-                    print(e)
-                    await self.__request_responder.asend("Error".encode())
+            except Exception as e:
+                print(e)
+                return "Error"
 
-            else:
-                print("Invalid Request")
-                await self.__request_responder.asend("Invalid Request".encode())
+        else:
+            print("Invalid Request")
+            return "Invalid Request"
 
     def __prepare_data(self) -> tuple[dict, dict, dict]:
+        """Prepares sorted data for visualisation"""
         sorted_lap_times: dict[str, dict] = sorted(self.__saved_lap_times, key=lambda item: item["time"])
         laptimes_dict = {str(i+1): item for i, item in enumerate(sorted_lap_times)}
 
