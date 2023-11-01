@@ -8,5 +8,5 @@ if __name__ == "__main__":
     # data_sender.start_non_threaded()
     # data_sender.start_async_tasks()
 
-    data_sender = RestApiConnection("api_functions_local.json", localdev=True)
+    data_sender = RestApiConnection(config="database_connection_config.json" ,localdev=True)
     data_sender.start()

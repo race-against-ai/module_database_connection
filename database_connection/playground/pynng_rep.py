@@ -4,6 +4,7 @@ import json
 
 # Create a REP socket and listen on a specific address
 server_socket = pynng.Rep0()
+
 server_socket.listen("ipc:///tmp/RAAI/connection_overlay.ipc")
 
 internet_connection = True
