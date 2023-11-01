@@ -15,14 +15,14 @@
         "address": "ipc:///tmp/RAAI/lap_times.ipc",
         "topics": {
           "lap_finished": "lap_finished",
-          "sector:finished": "sector_finished",
+          "sector_finished": "sector_finished",
           "lap_start": "lap_start"
         }
       }
     },
     "requesters": {
       "connection_overlay": {
-        "address": "ipc:///tmp/RAAI/connection_overlay.ipc"
+        "address": "ipc:///tmp/RAAI/rest_api.ipc"
       }
     }
   },

@@ -183,7 +183,8 @@ class RestApiConnection:
 
         connection_overlay_address = self.__config["pynng"]["requesters"]["connection_overlay"]["address"]
         self.__request_responder = pynng.Rep0()
-        # self.__request_responder.listen(connection_overlay_address)
+        print(connection_overlay_address)
+        self.__request_responder.listen(connection_overlay_address)
         self.__valid_requests = ["get_data", "get_data_by_id", "refresh", "reconnect", "help", "get_best_times"]
         print("Database connection initialized")
 
@@ -275,7 +276,7 @@ class RestApiConnection:
         for driver in self.__existing_driver_ids: 
             # response = database_request(url, payload, header, method)
             payload= {
-                "driver_id": driver
+                "id": driver
             }
             response = new_database_request(full_url, payload, "GET")
             if response != "Error":
@@ -406,11 +407,15 @@ class RestApiConnection:
 
     def __prepare_data(self) -> tuple[dict, dict, dict]:
         """Prepares sorted data for visualisation"""
+
         sorted_lap_times: dict[str, dict] = sorted(self.__saved_lap_times, key=lambda item: item["laptime"])
+
         laptimes_dict = {str(i+1): item for i, item in enumerate(sorted_lap_times)}
 
         drivers_dict = {str(i+1): item for i, item in enumerate(self.__saved_drivers)}
-        conventions_dict = {self.__save_conventions[i]["id"]: item for i, item in enumerate(self.__save_conventions)}
+
+        conventions_dict = {str(i+1):item for i, item in enumerate(self.__save_conventions)}
+
         return laptimes_dict, drivers_dict, conventions_dict
 
     async def __receive_time_tracking(self):
@@ -419,6 +424,7 @@ class RestApiConnection:
         Sends the Received Data to the API if valid
         """
         while True:
+            print("...")
             msg = await self.__time_tracking_subscriber.arecv()
             if msg is not None:
                 data_recv = remove_pynng_topic_mod(msg)
