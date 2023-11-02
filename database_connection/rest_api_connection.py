@@ -82,45 +82,11 @@ def new_database_request(url: str, params: dict, method:str):
         return "Error"
 
 
-async def publishing_api_worker(queue: asyncio.Queue, unsent_queue: asyncio.Queue):
-    timeout = aiohttp.ClientTimeout(total=2, connect=None)
-    print("API Worker started")
-
-    while True:
-        url, data, header, method = await queue.get()
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            try:
-                if method == "POST":
-                    async with session.post(url, json=data, headers=header) as resp:
-                        await resp.text()
-                        if resp.status != 200:
-                            print(f"Error sending data to API: {resp.status}")
-                            identifier = str(time.time())
-                            payload = {identifier: {
-                                "url": url,
-                                "data": data,
-                                "header": header,
-                                "method": method
-                            }}
-
-                            await unsent_queue.put(payload)
-
-                        else:
-                            print(f"Data sent to API: {data}")
-                
-                else:
-                    print("Invalid method")
-
-            except aiohttp.client_exceptions.ClientConnectorError:
-                print("Error connecting to API")
-            except asyncio.exceptions.TimeoutError:
-                print("Error connecting to API")
-
-
 class RestApiConnection:
 
-    def __init__(self, config: str = "database_connection_config.json", localdev: bool = False) -> None:
+    def __init__(self, config: str = "database_connection_config.json", localdev: bool = False, verbose: bool = False) -> None:
         self.__program_running = True
+        self.__verbose = verbose
 
         self.__config = json.load(open((resource_path() / config), "r"))
         
@@ -169,18 +135,16 @@ class RestApiConnection:
         self.__existing_driver_ids = []
         self.__existing_convention_ids = []
 
-        # Pynng Setup
-        publisher_address = self.__config["pynng"]["publishers"]["data_publisher"]["address"]
-        self.__data_publisher = pynng.Pub0()
-
-        time_tracking_address = self.__config["pynng"]["subscribers"]["time_tracking"]["address"]
+        # ----------------- Time Tracking Subscriber Setup -----------------
         time_tracking_topics_dict = self.__config["pynng"]["subscribers"]["time_tracking"]["topics"]
+        time_tracking_address = self.__config["pynng"]["subscribers"]["time_tracking"]["address"]
 
         self.__time_tracking_subscriber = pynng.Sub0()
         for topic in time_tracking_topics_dict:
             self.__time_tracking_subscriber.subscribe(topic)
         self.__time_tracking_subscriber.dial(time_tracking_address, block=False)
 
+        # ----------------- Data Responder Setup -----------------
         connection_overlay_address = self.__config["pynng"]["requesters"]["connection_overlay"]["address"]
         self.__request_responder = pynng.Rep0()
         print(connection_overlay_address)
@@ -190,9 +154,11 @@ class RestApiConnection:
 
         # current drivers and conventions for testing
         self.__current_driver = None
+        self.__set_driver("4823662a-29c5-47d7-bdba-68baa2825990")
         self.__current_convention = 1
 
         self.__current_lap = None
+        self.__reset_lap()
         self.__current_lap_valid = True
         # Refresh Entries on startup
         self.__handle_requests("refresh")
@@ -200,13 +166,20 @@ class RestApiConnection:
     
     def start(self):
         """Starts the RestApiConnection"""
-        loop = asyncio.get_event_loop()
-        responder_task = loop.create_task(self.__pynng_responder())
-        time_tracker_task = loop.create_task(self.__receive_time_tracking())
-        test_task = loop.create_task(self.__check_for_internet_connection())
+        try:
+            loop = asyncio.get_event_loop()
+            responder_task = loop.create_task(self.__pynng_responder())
+            time_tracker_task = loop.create_task(self.__receive_time_tracking())
+            check_for_internet = loop.create_task(self.__check_for_internet_connection())
 
-        loop.run_until_complete(asyncio.wait([responder_task, time_tracker_task, test_task]))
-        loop.run_forever() 
+            api_worker = loop.create_task(self.__publishing_api_worker(offline=False))
+
+            loop.run_until_complete(asyncio.wait([responder_task, time_tracker_task, check_for_internet, api_worker]))
+            loop.run_forever() 
+  
+        except KeyboardInterrupt:
+            self.__program_running = False
+            print("Keyboard Interrupt")
 
     async def __check_for_internet_connection(self):
         while True:
@@ -337,7 +310,6 @@ class RestApiConnection:
         """Handles requests received via pynng"""
         data = None
         if ":" in request:
-            # message = request.strip()
             message = request.split(":")
             print(message)
             request = message[0]
@@ -418,102 +390,147 @@ class RestApiConnection:
 
         return laptimes_dict, drivers_dict, conventions_dict
 
+    def __reset_lap(self):
+        self.__current_lap = {
+            "time": None,
+            "sector1": None,
+            "sector2": None,
+            "sector3": None
+        }
+        self.__current_lap_valid = True
+
+    def __set_driver(self, driver_id: str) -> None:
+        """Sets the current driver"""
+        try:
+            method = "GET"
+            full_url = self.__api_url + "driver"
+            payload = {
+                "id": driver_id
+            }
+            response = new_database_request(full_url, payload, method)
+            if response != "Error":
+                if response:
+                    self.__current_driver = response[0]
+                else:
+                    raise Exception("No Driver found")
+        
+        except Exception as e:
+            print("Error setting driver: Using Default Driver")
+            self.__current_driver = {
+                "id": "4823662a-29c5-47d7-bdba-68baa2825990", 
+                "name": "Dummy", 
+                "email": "example@email.test", 
+                "created": "2023-11-02-08-58-03"
+            }
+
     async def __receive_time_tracking(self):
         """
         Handle Time Tracking Data, received via pynng.
         Sends the Received Data to the API if valid
         """
         while self.__program_running:
-            print("...")
+            # 
             msg = await self.__time_tracking_subscriber.arecv()
-            print("!!!")
             if msg is not None:
-                data_recv = remove_pynng_topic_mod(msg)
-                topic: str = data_recv[1]
-                data: dict = data_recv[0]
-                print(f"received topic: {topic}")
+                try:
+                    data_recv = remove_pynng_topic_mod(msg)
+                    topic: str = data_recv[1]
+                    data: dict = data_recv[0]
+                    data = json.loads(data)
+                    if self.__verbose:
+                        print(f"received topic: {topic}")
+                        print(data)
 
-                if topic == "lap_start":
-                    print("lap_start")
-                    print(data, "\n")
-                    if self.__current_lap is None:
-                        self.__reset_lap()
-                    else:
-                        for entry, value in self.__current_lap.items():
-                            if value is None:
-                                self.__current_lap_valid = False
-                                break
-                        
-                        if self.__current_lap_valid and self.__current_driver:
-                            data = {
-                                "id": self.__current_driver["id"],
-                                "lap_time": self.__current_lap["time"],
-                                "sector1": self.__current_lap["sector1"],
-                                "sector2": self.__current_lap["sector2"],
-                                "sector3": self.__current_lap["sector3"],
-                                "driver_id": self.__current_driver["id"],
-                                "convention_id": self.__current_convention
-                            }
-                            payload = {
-                                "method": "POST",
-                                "table": "drivertimes",
-                                "data": data
-                            }
-
-                            url = self.__api_url + "drivertime"
-                            method = "POST"
-                            if self.__current_driver["id"] is not None:
-                                self.__api_queue.put((url, data, method))
+                    if topic == "lap_start":
+                        if self.__current_lap is None:
+                            self.__reset_lap()
+                        else:
+                            for entry, value in self.__current_lap.items():
+                                if value is None:
+                                    self.__current_lap_valid = False
+                                    print(f"{entry} is None")
+                                    break
                             
+                            if self.__current_lap_valid and self.__current_driver:
+                                data = {
+                                    "id": self.__current_driver["id"],
+                                    "laptime": self.__current_lap["time"],
+                                    "sector1": self.__current_lap["sector1"],
+                                    "sector2": self.__current_lap["sector2"],
+                                    "sector3": self.__current_lap["sector3"],
+                                    "driver_id": self.__current_driver["id"],
+                                    "convention_id": self.__current_convention
+                                }
+                                payload = {
+                                    "method": "POST",
+                                    "table": "drivertimes",
+                                    "data": data
+                                }
+
+                                url = self.__api_url + "drivertime"
+                                method = "POST"
+                                if self.__current_driver["id"] is not None:
+                                    await self.__api_queue.put((url, data, method))
+
+                                else:
+                                    print("No Driver ID")
+
                             else:
-                                print("No Driver ID")
+                                print("Data not valid")
+                            self.__reset_lap()
 
-                        self.__reset_lap()
-
-                elif topic == "sector_finished":
-                    print(data, "\n")
-                    sector = data["sector_number"]
-                    lap_time = data["sector_time"]
-                    valid = data["sector_valid"]
-                    if self.__current_lap_valid:
-                        if valid:
+                    elif topic == "sector_finished":
+                        sector = data["sector_number"]
+                        lap_time = data["sector_time"]
+                        valid = data["sector_valid"]
+                        if self.__current_lap_valid and valid:
                             self.__current_lap[f"sector{sector}"] = lap_time
 
-                elif topic == "lap_finished":
-                    print("lap_finished")
-                    lap_time = data["lap_time"]
-                    valid = data["lap_valid"]
-                    if valid:
-                        self.__current_lap["time"] = lap_time
-
-    async def __publishing_api_worker(self):
+                    elif topic == "lap_finished":
+                        lap_time = data["lap_time"]
+                        valid = data["lap_valid"]
+                        if valid:
+                            self.__current_lap["time"] = lap_time
+                
+                except Exception as e:
+                    print(e)
+            
+            
+    async def __publishing_api_worker(self, offline: bool = False):
         timeout = aiohttp.ClientTimeout(total=2, connect=None)
         print("API Worker started")
 
-        while True:
+        while self.__program_running:
             url, data, method = await self.__api_queue.get()
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                try:
-                    if method == "POST":
-                        async with session.post(url, data=data) as resp:
-                            await resp.text()
-                            if resp.status != 200:
-                                print(f"Error sending data to API: {resp.status}")
-                                identifier = str(time.time())
-                                payload = {identifier: {
-                                    "url": url,
-                                    "data": data,
-                                    "method": method
-                                }}
-                                await self.__unsent_queue.put(payload)
+            print(data, "\n")
+            if not offline:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    try:
+                        if method == "POST":
+                            async with session.post(url, params=data) as resp:
+                                await resp.text()
+                                if resp.status != 200 or resp.status != 201:
+                                    print(f"Error sending data to API: {resp.status}")
+                                    identifier = str(time.time())
+                                    payload = {identifier: {
+                                        "url": url,
+                                        "data": data,
+                                        "method": method
+                                    }}
+                                    await self.__unsent_queue.put(payload)
 
-                            else:
-                                print(f"Data sent to API: {data}")
+                                else:
+                                    
+                                    print(f"Data sent to API: {data} \n")
 
-                except aiohttp.client_exceptions.ClientConnectorError:
-                    print("Error connecting to API")
-                except asyncio.exceptions.TimeoutError:
-                    print("Error connecting to API")
+                    except aiohttp.client_exceptions.ClientConnectorError:
+                        print("Error connecting to API")
+                    except asyncio.exceptions.TimeoutError:
+                        print("Error connecting to API")
+            else:
+                print("Offline Mode")
+                print(data)
+
 
     async def __no_internet_api_worker(self):
         print("No Internet API Worker started")
@@ -524,7 +541,7 @@ class RestApiConnection:
             url = payload[identifier]["url"]
             method = payload[identifier]["method"]
 
-            if self.__internet_connection is False:
+            if self.__internet_connection is False:     
                 if len(self.__unsent_data) <= 30:
                     self.__unsent_data[identifier] = payload[identifier]
                     print(f"Amount of Data in unsent_data: {len(self.__unsent_data)}")
