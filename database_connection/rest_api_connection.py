@@ -423,9 +423,10 @@ class RestApiConnection:
         Handle Time Tracking Data, received via pynng.
         Sends the Received Data to the API if valid
         """
-        while True:
+        while self.__program_running:
             print("...")
             msg = await self.__time_tracking_subscriber.arecv()
+            print("!!!")
             if msg is not None:
                 data_recv = remove_pynng_topic_mod(msg)
                 topic: str = data_recv[1]
