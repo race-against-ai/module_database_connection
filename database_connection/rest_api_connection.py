@@ -58,7 +58,7 @@ def remove_pynng_topic_mod(data, sign: str = " ") -> list[str]:
     return [decoded_data, topic]
 
 
-def new_database_request(url: str, params: dict, method:str):
+def new_database_request(url: str, params: dict = {}, method:str = "GET"):
     """
     Database Request with on REST principle
 
@@ -149,7 +149,9 @@ class RestApiConnection:
         self.__request_responder = pynng.Rep0()
         print(connection_overlay_address)
         self.__request_responder.listen(connection_overlay_address)
-        self.__valid_requests = ["get_data", "get_data_by_id", "refresh", "reconnect", "help", "get_best_times"]
+        self.__valid_requests = ["get_data", "get_data_by_id", "refresh", "reconnect", 
+                                 "help", "get_best_times", "get_current_driver", "get_drivers",
+                                 "post_driver", "change_driver"]
         print("Database connection initialized")
 
         # current drivers and conventions for testing
@@ -312,12 +314,17 @@ class RestApiConnection:
         if ":" in request:
             message = request.split(":")
             print(message)
+            print("weeh")
             request = message[0]
             data_str = message[1]
             try: 
                 data_list = data_str.strip('[]').split(',')
+                print("foo")
                 data_list = [f'"{entry.strip()}"' for entry in data_list]
+                print('bar')
                 data_str =f"[{','.join(data_list)}]"
+                print(data_str)
+                print('baz')
                 data = json.loads(data_str)
                 print(type(data), data)
             except json.decoder.JSONDecodeError:
@@ -365,6 +372,46 @@ class RestApiConnection:
                     else:
                         self.__internet_connection = False
                         return "No Internet Connection"
+
+                elif request == "get_current_driver":
+                    if data:
+                        self.__set_driver(data["id"])
+                        return json.dumps(self.__current_driver)                
+
+                elif request == "get_drivers":
+                    url = self.__api_url + "drivers"
+                    method = "GET"
+                    response = new_database_request(url, method=method)
+                    if response != "Error":
+                        if response:
+                            return json.dumps(response)
+                        else:
+                            return "No Driver found"
+
+                elif request == "post_driver":
+                    url = self.__api_url + "driver"
+                    method = "POST"
+                    data = {"name": data}
+                    response = new_database_request(url, data, method)
+                    if response != "Error":
+                        if response:
+                            return json.dumps(response)
+                        else:
+                            return "No Driver found"
+
+                elif request == "change_driver":
+                    if data:
+                        url = self.__api_url + "driver"
+                        method = "GET"
+                        payload = {"id": data}
+                        response = new_database_request(url, payload, method)
+                        if response != "Error":
+                            if response:
+                                self.__current_driver = response
+                                return json.dumps(response)
+                            else:
+                                return "No Driver found"
+                        
 
                 elif request == "help":
                     return json.dumps(self.__valid_requests)
@@ -494,8 +541,7 @@ class RestApiConnection:
                 
                 except Exception as e:
                     print(e)
-            
-            
+                     
     async def __publishing_api_worker(self, offline: bool = False):
         timeout = aiohttp.ClientTimeout(total=2, connect=None)
         print("API Worker started")
