@@ -89,7 +89,7 @@ class RestApiConnection:
         self.__verbose = verbose
 
         self.__config = json.load(open((resource_path() / config), "r"))
-        
+        self.__localdev = localdev
         # setting api url based on azure enviroment
         if not localdev:
             self.__api_url = self.__config["api_url"]
@@ -184,13 +184,16 @@ class RestApiConnection:
             print("Keyboard Interrupt")
 
     async def __check_for_internet_connection(self):
-        while True:
-            self.__internet_connection = is_internet_available()
-            if self.__internet_connection:
-                print("Internet Connection established")
-            else:
-                print("------! No Internet Connection")
-            await asyncio.sleep(60*5)
+        if not self.__localdev:
+            while True:
+                self.__internet_connection = is_internet_available()
+                if self.__internet_connection:
+                    print("Internet Connection established")
+                else:
+                    print("------! No Internet Connection")
+                await asyncio.sleep(60*5)
+        else:
+            self.__internet_connection = True
 
     def __refresh_entries(self):
         """Requests all Drivers, Conventions and Laptimes from the API"""
@@ -319,12 +322,8 @@ class RestApiConnection:
             data_str = message[1]
             try: 
                 data_list = data_str.strip('[]').split(',')
-                print("foo")
                 data_list = [f'"{entry.strip()}"' for entry in data_list]
-                print('bar')
                 data_str =f"[{','.join(data_list)}]"
-                print(data_str)
-                print('baz')
                 data = json.loads(data_str)
                 print(type(data), data)
             except json.decoder.JSONDecodeError:
@@ -576,7 +575,6 @@ class RestApiConnection:
             else:
                 print("Offline Mode")
                 print(data)
-
 
     async def __no_internet_api_worker(self):
         print("No Internet API Worker started")
