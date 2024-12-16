@@ -7,3 +7,5 @@ setuptools~=68.0.0
 tomli~=2.0.1
 
 pynng
+requests
+aiohttp
